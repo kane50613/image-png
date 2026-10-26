@@ -3,8 +3,8 @@ use io::{Read, Write};
 use ops::{Deref, DerefMut};
 use std::{borrow, error, fmt, io, mem, ops, result};
 
-use crc32fast::Hasher as Crc32;
 use flate2::write::ZlibEncoder;
+use flate2::Crc as Crc32;
 
 use crate::chunk::{self, ChunkType};
 use crate::common::{
@@ -526,7 +526,7 @@ pub(crate) fn write_chunk<W: Write>(mut w: W, name: chunk::ChunkType, data: &[u8
     let mut crc = Crc32::new();
     crc.update(&name.0);
     crc.update(data);
-    w.write_be(crc.finalize())?;
+    w.write_be(crc.sum())?;
     Ok(())
 }
 
