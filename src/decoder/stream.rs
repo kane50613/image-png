@@ -4,7 +4,7 @@ use std::fmt;
 use std::io;
 use std::{borrow::Cow, cmp::min};
 
-use crc32fast::Hasher as Crc32;
+use flate2::Crc as Crc32;
 
 use super::zlib::UnfilterBuf;
 use super::zlib::ZlibStream;
@@ -956,7 +956,7 @@ impl StreamingDecoder {
                 let sum = if self.decode_options.ignore_crc {
                     val
                 } else {
-                    self.current_chunk.crc.clone().finalize()
+                    self.current_chunk.crc.sum()
                 };
 
                 if val == sum || CHECKSUM_DISABLED {
