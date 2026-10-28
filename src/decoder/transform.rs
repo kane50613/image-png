@@ -97,40 +97,45 @@ where
     // number of shift lookups per bit depth * channels * input length
     assert!((8 / bit_depth as usize * channels).saturating_mul(input.len()) >= output.len());
 
-    let mut buf_chunks = output.chunks_exact_mut(channels);
-    let mut iter = input.iter();
-
-    // `shift` iterates through the corresponding bit depth sequence:
-    // 1 => &[7, 6, 5, 4, 3, 2, 1, 0],
-    // 2 => &[6, 4, 2, 0],
-    // 4 => &[4, 0],
-    // 8 => &[0],
-    //
-    // `(0..8).step_by(bit_depth.into()).rev()` doesn't always optimize well so
-    // shifts are calculated instead. (2023-08, Rust 1.71)
-
-    if bit_depth == 8 {
-        for (&curr, chunk) in iter.zip(&mut buf_chunks) {
-            func(curr, chunk);
-        }
-    } else {
-        let mask = ((1u16 << bit_depth) - 1) as u8;
-
-        // These variables are initialized in the loop
-        let mut shift = -1;
-        let mut curr = 0;
-
-        for chunk in buf_chunks {
-            if shift < 0 {
-                shift = 8 - bit_depth as i32;
-                curr = *iter.next().expect("input for unpack bits is not empty");
+    match bit_depth {
+        1 => unpack_subbyte_bits::<1, _>(input, output, channels, func),
+        2 => unpack_subbyte_bits::<2, _>(input, output, channels, func),
+        4 => unpack_subbyte_bits::<4, _>(input, output, channels, func),
+        _ => {
+            for (&curr, chunk) in input.iter().zip(output.chunks_exact_mut(channels)) {
+                func(curr, chunk);
             }
-
-            let pixel = (curr >> shift) & mask;
-            func(pixel, chunk);
-
-            shift -= bit_depth as i32;
         }
+    }
+}
+
+/// [`unpack_bits`] for `BITS` below 8, taking all the pixels of each input byte at once.
+#[inline(always)]
+fn unpack_subbyte_bits<const BITS: usize, F>(
+    input: &[u8],
+    output: &mut [u8],
+    channels: usize,
+    func: F,
+) where
+    F: Fn(u8, &mut [u8]),
+{
+    let mask = ((1u16 << BITS) - 1) as u8;
+    let byte_len = channels * (8 / BITS);
+    let full_bytes = output.len() / byte_len;
+    let unpack_byte = |byte: u8, pixels: &mut [u8]| {
+        for (i, pixel) in pixels.chunks_exact_mut(channels).enumerate() {
+            func((byte >> (8 - BITS * (i + 1))) & mask, pixel);
+        }
+    };
+
+    let mut chunks = output.chunks_exact_mut(byte_len);
+    for (&byte, pixels) in input.iter().zip(&mut chunks) {
+        unpack_byte(byte, pixels);
+    }
+
+    let rest = chunks.into_remainder();
+    if !rest.is_empty() {
+        unpack_byte(input[full_bytes], rest);
     }
 }
 
@@ -210,17 +215,9 @@ fn expand_gray_u8(row: &[u8], buffer: &mut [u8], info: &Info) {
 
 fn expand_gray_u8_with_trns(row: &[u8], buffer: &mut [u8], info: &Info) {
     let scaling_factor = (255) / ((1u16 << info.bit_depth as u8) - 1) as u8;
-    let trns = info.trns.as_deref();
+    let key = info.trns.as_deref().map(|trns| trns[0]);
     unpack_bits(row, buffer, 2, info.bit_depth as u8, |pixel, chunk| {
-        chunk[1] = if let Some(trns) = trns {
-            if pixel == trns[0] {
-                0
-            } else {
-                0xFF
-            }
-        } else {
-            0xFF
-        };
+        chunk[1] = if Some(pixel) == key { 0 } else { 0xFF };
         chunk[0] = pixel * scaling_factor
     });
 }
