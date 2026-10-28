@@ -3,7 +3,7 @@ use std::{fs, io::Cursor};
 use criterion::{
     criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, Criterion, Throughput,
 };
-use png::{Decoder, Reader, Transformations};
+use png::{BitDepth, ColorType, Decoder, Encoder, Reader, Transformations};
 
 #[path = "../src/test_utils.rs"]
 mod test_utils;
@@ -19,6 +19,26 @@ fn load_all(c: &mut Criterion) {
         let data = fs::read(entry.path()).unwrap();
         bench_file(&mut g, data, entry.file_name().into_string().unwrap());
     }
+    g.finish();
+
+    // The transformations of a caller that wants 8-bit samples with alpha, whatever the source.
+    let mut g = c.benchmark_group("expand-alpha");
+    for name in [
+        "kodim23.png",
+        "lorem_ipsum_screenshot.png",
+        "lorem_ipsum_oxipng.png",
+        "tango-icon-address-book-new-128-rsvg-convert.png",
+    ] {
+        let data = fs::read(format!("tests/benches/{name}")).unwrap();
+        bench_file_with(&mut g, data, name.to_owned(), EXPAND_ALPHA);
+    }
+    let kodim23 = fs::read("tests/benches/kodim23.png").unwrap();
+    bench_file_with(
+        &mut g,
+        with_rgb_trns(&kodim23),
+        "kodim23-trns.png".to_owned(),
+        EXPAND_ALPHA,
+    );
     g.finish();
 
     // Small IDATS
@@ -61,18 +81,31 @@ fn bench_noncompressed_png(g: &mut BenchmarkGroup<WallTime>, size: u32, idat_byt
 
 /// This benchmarks decoding via a call to `Reader::next_frame`.
 fn bench_file(g: &mut BenchmarkGroup<WallTime>, data: Vec<u8>, name: String) {
+    bench_file_with(g, data, name, Transformations::EXPAND);
+}
+
+const EXPAND_ALPHA: Transformations = Transformations::EXPAND
+    .union(Transformations::STRIP_16)
+    .union(Transformations::ALPHA);
+
+fn bench_file_with(
+    g: &mut BenchmarkGroup<WallTime>,
+    data: Vec<u8>,
+    name: String,
+    transformations: Transformations,
+) {
     if data.len() > 1_000_000 {
         g.sample_size(10);
     }
 
-    let mut reader = create_reader(data.as_slice());
+    let mut reader = create_reader_with(data.as_slice(), transformations);
     let mut image = vec![0; reader.output_buffer_size().unwrap()];
     let info = reader.next_frame(&mut image).unwrap();
 
     g.throughput(Throughput::Bytes(info.buffer_size() as u64));
     g.bench_with_input(name, &data, |b, data| {
         b.iter(|| {
-            let mut reader = create_reader(data.as_slice());
+            let mut reader = create_reader_with(data.as_slice(), transformations);
             reader.next_frame(&mut image).unwrap();
         })
     });
@@ -96,11 +129,35 @@ fn bench_read_row(g: &mut BenchmarkGroup<WallTime>, data: Vec<u8>, name: &str) {
 }
 
 fn create_reader(data: &[u8]) -> Reader<Cursor<&[u8]>> {
-    let mut decoder = Decoder::new(Cursor::new(data));
-
     // Cover default transformations used by the `image` crate when constructing
     // `image::codecs::png::PngDecoder`.
-    decoder.set_transformations(Transformations::EXPAND);
+    create_reader_with(data, Transformations::EXPAND)
+}
 
+fn create_reader_with(data: &[u8], transformations: Transformations) -> Reader<Cursor<&[u8]>> {
+    let mut decoder = Decoder::new(Cursor::new(data));
+    decoder.set_transformations(transformations);
     decoder.read_info().unwrap()
+}
+
+/// Re-encodes an 8-bit RGB PNG with a `tRNS` key of its first pixel's color.
+fn with_rgb_trns(rgb_png: &[u8]) -> Vec<u8> {
+    let mut reader = create_reader_with(rgb_png, Transformations::IDENTITY);
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut pixels).unwrap();
+    let (width, height) = reader.info().size();
+    assert_eq!(reader.info().color_type, ColorType::Rgb);
+
+    let trns: Vec<u8> = pixels[..3].iter().flat_map(|&sample| [0, sample]).collect();
+    let mut encoded = Vec::new();
+    let mut encoder = Encoder::new(&mut encoded, width, height);
+    encoder.set_color(ColorType::Rgb);
+    encoder.set_depth(BitDepth::Eight);
+    encoder.set_trns(trns);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&pixels)
+        .unwrap();
+    encoded
 }
