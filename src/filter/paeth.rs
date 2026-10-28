@@ -106,11 +106,20 @@ pub(super) fn unfilter(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8])
             let (mut a, mut c) = (0, 0);
             for (x, &b) in current.iter_mut().zip(previous) {
                 let b = i32::from(b);
-                let thresh = c * 3 - (a + b);
-                let lo = a.min(b);
-                let hi = a.max(b);
-                let t0 = if hi <= thresh { lo } else { c };
-                let predictor = if thresh <= lo { hi } else { t0 };
+                // `b == c` makes the predictor `a`. Branching on it pays off in V8 but not natively.
+                let predictor = if cfg!(target_arch = "wasm32") && b == c {
+                    a
+                } else {
+                    let thresh = c * 3 - (a + b);
+                    let lo = a.min(b);
+                    let hi = a.max(b);
+                    let t0 = if hi <= thresh { lo } else { c };
+                    if thresh <= lo {
+                        hi
+                    } else {
+                        t0
+                    }
+                };
                 *x = x.wrapping_add(predictor as u8);
                 a = i32::from(*x);
                 c = b;
@@ -150,9 +159,16 @@ pub(super) fn unfilter(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8])
                 current = c_rest;
                 previous = p_rest;
 
-                *c0 = c0.wrapping_add(filter_paeth(a_bpp[0], *p0, c_bpp[0]));
-                *c1 = c1.wrapping_add(filter_paeth(a_bpp[1], *p1, c_bpp[1]));
-                *c2 = c2.wrapping_add(filter_paeth(a_bpp[2], *p2, c_bpp[2]));
+                // Under a flat row, `b == c` makes the predictor `a`, which shortens the chain.
+                if [*p0, *p1, *p2] == c_bpp {
+                    *c0 = c0.wrapping_add(a_bpp[0]);
+                    *c1 = c1.wrapping_add(a_bpp[1]);
+                    *c2 = c2.wrapping_add(a_bpp[2]);
+                } else {
+                    *c0 = c0.wrapping_add(filter_paeth(a_bpp[0], *p0, c_bpp[0]));
+                    *c1 = c1.wrapping_add(filter_paeth(a_bpp[1], *p1, c_bpp[1]));
+                    *c2 = c2.wrapping_add(filter_paeth(a_bpp[2], *p2, c_bpp[2]));
+                }
 
                 a_bpp = [*c0, *c1, *c2];
                 c_bpp = [*p0, *p1, *p2];
@@ -181,10 +197,18 @@ pub(super) fn unfilter(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8])
                 current = c_rest;
                 previous = p_rest;
 
-                *c0 = c0.wrapping_add(filter_paeth(a_bpp[0], *p0, c_bpp[0]));
-                *c1 = c1.wrapping_add(filter_paeth(a_bpp[1], *p1, c_bpp[1]));
-                *c2 = c2.wrapping_add(filter_paeth(a_bpp[2], *p2, c_bpp[2]));
-                *c3 = c3.wrapping_add(filter_paeth(a_bpp[3], *p3, c_bpp[3]));
+                // Under a flat row, `b == c` makes the predictor `a`, which shortens the chain.
+                if [*p0, *p1, *p2, *p3] == c_bpp {
+                    *c0 = c0.wrapping_add(a_bpp[0]);
+                    *c1 = c1.wrapping_add(a_bpp[1]);
+                    *c2 = c2.wrapping_add(a_bpp[2]);
+                    *c3 = c3.wrapping_add(a_bpp[3]);
+                } else {
+                    *c0 = c0.wrapping_add(filter_paeth(a_bpp[0], *p0, c_bpp[0]));
+                    *c1 = c1.wrapping_add(filter_paeth(a_bpp[1], *p1, c_bpp[1]));
+                    *c2 = c2.wrapping_add(filter_paeth(a_bpp[2], *p2, c_bpp[2]));
+                    *c3 = c3.wrapping_add(filter_paeth(a_bpp[3], *p3, c_bpp[3]));
+                }
 
                 a_bpp = [*c0, *c1, *c2, *c3];
                 c_bpp = [*p0, *p1, *p2, *p3];
@@ -293,8 +317,16 @@ pub(super) fn unfilter_stbi(tbpp: BytesPerPixel, previous: &[u8], current: &mut 
                 .chunks_exact_mut(BPP)
                 .zip(previous.chunks_exact(BPP))
             {
-                for i in 0..BPP {
-                    c[i] = c[i].wrapping_add(filter_paeth_stbi(a_bpp[i], p[i] as i16, c_bpp[i]));
+                // Under a flat row, `b == c` makes the predictor `a`, which shortens the chain.
+                if p.iter().zip(c_bpp).all(|(&b, c)| i16::from(b) == c) {
+                    for i in 0..BPP {
+                        c[i] = c[i].wrapping_add(a_bpp[i] as u8);
+                    }
+                } else {
+                    for i in 0..BPP {
+                        c[i] =
+                            c[i].wrapping_add(filter_paeth_stbi(a_bpp[i], p[i] as i16, c_bpp[i]));
+                    }
                 }
 
                 a_bpp = [c[0] as i16, c[1] as i16, c[2] as i16];
@@ -317,8 +349,16 @@ pub(super) fn unfilter_stbi(tbpp: BytesPerPixel, previous: &[u8], current: &mut 
                 .chunks_exact_mut(BPP)
                 .zip(previous.chunks_exact(BPP))
             {
-                for i in 0..BPP {
-                    c[i] = c[i].wrapping_add(filter_paeth_stbi(a_bpp[i], p[i] as i16, c_bpp[i]));
+                // Under a flat row, `b == c` makes the predictor `a`, which shortens the chain.
+                if p.iter().zip(c_bpp).all(|(&b, c)| i16::from(b) == c) {
+                    for i in 0..BPP {
+                        c[i] = c[i].wrapping_add(a_bpp[i] as u8);
+                    }
+                } else {
+                    for i in 0..BPP {
+                        c[i] =
+                            c[i].wrapping_add(filter_paeth_stbi(a_bpp[i], p[i] as i16, c_bpp[i]));
+                    }
                 }
 
                 a_bpp = [c[0] as i16, c[1] as i16, c[2] as i16, c[3] as i16];

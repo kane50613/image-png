@@ -677,6 +677,30 @@ mod test {
     }
 
     #[test]
+    fn roundtrip_paeth_partly_flat_previous_line() {
+        // A multiple of 8, 6, 4, 3, 2, 1, with the previous line flat for its first half.
+        const LEN: usize = 240;
+        let previous: Vec<u8> = (0..LEN)
+            .map(|i| if i < LEN / 2 { 7 } else { (i * 37) as u8 })
+            .collect();
+        let current: Vec<u8> = (0..LEN).map(|i| (i * 101 + 13) as u8).collect();
+
+        for bpp in [
+            BytesPerPixel::One,
+            BytesPerPixel::Two,
+            BytesPerPixel::Three,
+            BytesPerPixel::Four,
+            BytesPerPixel::Six,
+            BytesPerPixel::Eight,
+        ] {
+            let mut output = vec![0; LEN];
+            filter(Filter::Paeth, bpp, &previous, &current, &mut output);
+            unfilter(RowFilter::Paeth, bpp, &previous, &mut output);
+            assert_eq!(output, current, "Paeth with {bpp:?} does not roundtrip");
+        }
+    }
+
+    #[test]
     fn roundtrip_ascending_previous_line() {
         // A multiple of 8, 6, 4, 3, 2, 1
         const LEN: u8 = 240;
