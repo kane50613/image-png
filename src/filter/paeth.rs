@@ -91,13 +91,19 @@ pub(super) fn unfilter(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8])
     // A X
     match tbpp {
         BytesPerPixel::One => {
-            let mut a_bpp = [0; 1];
-            let mut c_bpp = [0; 1];
-            for (chunk, b_bpp) in current.chunks_exact_mut(1).zip(previous.chunks_exact(1)) {
-                let new_chunk = [chunk[0].wrapping_add(filter_paeth(a_bpp[0], b_bpp[0], c_bpp[0]))];
-                *TryInto::<&mut [u8; 1]>::try_into(chunk).unwrap() = new_chunk;
-                a_bpp = new_chunk;
-                c_bpp = b_bpp.try_into().unwrap();
+            // Each byte depends on the one before, so the short dependency chain of the stbi
+            // formulation in `i32` beats `filter_paeth` here, unlike for wider pixels.
+            let (mut a, mut c) = (0, 0);
+            for (x, &b) in current.iter_mut().zip(previous) {
+                let b = i32::from(b);
+                let thresh = c * 3 - (a + b);
+                let lo = a.min(b);
+                let hi = a.max(b);
+                let t0 = if hi <= thresh { lo } else { c };
+                let predictor = if thresh <= lo { hi } else { t0 };
+                *x = x.wrapping_add(predictor as u8);
+                a = i32::from(*x);
+                c = b;
             }
         }
         BytesPerPixel::Two => {
