@@ -86,6 +86,16 @@ pub(super) fn filter_paeth_fpnge(a: u8, b: u8, c: u8) -> u8 {
 #[allow(unreachable_code)]
 #[cfg(not(target_arch = "x86_64"))]
 pub(super) fn unfilter(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8]) {
+    // V8 runs these pixel sizes faster with the stbi formulation, as measured with a wasm32
+    // simd128 build in Node.js on Apple M1. One and eight bytes per pixel are faster below.
+    #[cfg(target_arch = "wasm32")]
+    if matches!(
+        tbpp,
+        BytesPerPixel::Two | BytesPerPixel::Three | BytesPerPixel::Four | BytesPerPixel::Six
+    ) {
+        return unfilter_stbi(tbpp, previous, current);
+    }
+
     // Paeth filter pixels:
     // C B D
     // A X
@@ -219,12 +229,15 @@ pub(super) fn unfilter(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8])
     }
 }
 
-/// The x86_64 functions avoid casting between u8xN and i16xN SIMD
+#[cfg(target_arch = "x86_64")]
+pub(super) use unfilter_stbi as unfilter;
+
+/// The stbi functions avoid casting between u8xN and i16xN SIMD
 /// representations when possible by maintaining [i16; BPP] arrays
 /// between iterations instead of [u8; BPP].
 #[allow(unreachable_code)]
-#[cfg(target_arch = "x86_64")]
-pub(super) fn unfilter(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8]) {
+#[cfg(any(target_arch = "x86_64", target_arch = "wasm32"))]
+pub(super) fn unfilter_stbi(tbpp: BytesPerPixel, previous: &[u8], current: &mut [u8]) {
     // Paeth filter pixels:
     // C B D
     // A X
