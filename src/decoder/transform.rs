@@ -135,14 +135,37 @@ where
 }
 
 fn expand_trns_line(input: &[u8], output: &mut [u8], info: &Info) {
-    let channels = info.color_type.samples();
     let trns = info.trns.as_deref();
-    for (input, output) in input
-        .chunks_exact(channels)
-        .zip(output.chunks_exact_mut(channels + 1))
-    {
-        output[..channels].copy_from_slice(input);
-        output[channels] = if Some(input) == trns { 0 } else { 0xFF };
+    match info.color_type.samples() {
+        1 => expand_trns_pixels::<1, 2>(input, output, trns),
+        3 => expand_trns_pixels::<3, 4>(input, output, trns),
+        channels => {
+            for (input, output) in input
+                .chunks_exact(channels)
+                .zip(output.chunks_exact_mut(channels + 1))
+            {
+                output[..channels].copy_from_slice(input);
+                output[channels] = if Some(input) == trns { 0 } else { 0xFF };
+            }
+        }
+    }
+}
+
+/// [`expand_trns_line`] for `N` channels, `M` being `N + 1`, so each pixel copies and compares
+/// at a fixed size.
+fn expand_trns_pixels<const N: usize, const M: usize>(
+    input: &[u8],
+    output: &mut [u8],
+    trns: Option<&[u8]>,
+) {
+    let key = trns.and_then(|trns| <[u8; N]>::try_from(trns).ok());
+    for (input, output) in input.chunks_exact(N).zip(output.chunks_exact_mut(M)) {
+        output[..N].copy_from_slice(input);
+        output[N] = if key.is_some_and(|key| input == key) {
+            0
+        } else {
+            0xFF
+        };
     }
 }
 
