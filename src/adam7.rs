@@ -382,23 +382,12 @@ pub fn expand_pass(
                 img[pos.byte] |= px << shift;
             }
         }
-        // While caught by the below loop, we special case this for codegen. The effects are
-        // massive when the compiler uses the constant chunk size in particular for this case where
-        // no more copy_from_slice is being issued by everything happens in the register alone.
-        8 => {
-            let byte_indices = expand_adam7_bytes(img_row_stride, interlace_info, 1);
-
-            for (bytepos, &px) in byte_indices.zip(interlaced_row) {
-                img[bytepos] = px;
-            }
-        }
-        16 => {
-            let byte_indices = expand_adam7_bytes(img_row_stride, interlace_info, 2);
-
-            for (bytepos, px) in byte_indices.zip(interlaced_row.chunks(2)) {
-                img[bytepos..][..2].copy_from_slice(px);
-            }
-        }
+        8 => expand_pass_bytes::<1>(img, img_row_stride, interlaced_row, interlace_info),
+        16 => expand_pass_bytes::<2>(img, img_row_stride, interlaced_row, interlace_info),
+        24 => expand_pass_bytes::<3>(img, img_row_stride, interlaced_row, interlace_info),
+        32 => expand_pass_bytes::<4>(img, img_row_stride, interlaced_row, interlace_info),
+        48 => expand_pass_bytes::<6>(img, img_row_stride, interlaced_row, interlace_info),
+        64 => expand_pass_bytes::<8>(img, img_row_stride, interlaced_row, interlace_info),
         _ => {
             debug_assert!(bits_per_pixel % 8 == 0);
             let bytes_pp = bits_per_pixel / 8;
@@ -408,6 +397,20 @@ pub fn expand_pass(
                 img[bytepos..][..px.len()].copy_from_slice(px);
             }
         }
+    }
+}
+
+/// [`expand_pass`] for whole-byte pixels of `N` bytes, copying each at a fixed size.
+fn expand_pass_bytes<const N: usize>(
+    img: &mut [u8],
+    img_row_stride: usize,
+    interlaced_row: &[u8],
+    interlace_info: &Adam7Info,
+) {
+    let byte_indices = expand_adam7_bytes(img_row_stride, interlace_info, N as u8);
+
+    for (bytepos, px) in byte_indices.zip(interlaced_row.chunks_exact(N)) {
+        img[bytepos..][..N].copy_from_slice(px);
     }
 }
 
